@@ -62,16 +62,29 @@ public abstract class LivingEntityMixin {
     }
 
     // ==========================================
-    // 新增：战利品掉落逻辑 (远古守卫者100%，普通1%)
+    // 新增：战利品掉落逻辑 (远古守卫者100%，普通守卫者玩家击杀 1.25%)
     // ==========================================
     @Inject(method = "dropCustomDeathLoot", at = @At("TAIL"))
     private void onDropDeathLoot(ServerLevel serverLevel, DamageSource damageSource, boolean recentlyHit, org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
         LivingEntity entity = (LivingEntity) (Object) this;
 
-        // 判定：如果是远古守卫者，或者是普通守卫者且踩中了 1% 的概率
-        if (entity.getType() == net.minecraft.world.entity.EntityType.ELDER_GUARDIAN ||
-                (entity.getType() == net.minecraft.world.entity.EntityType.GUARDIAN && serverLevel.getRandom().nextFloat() < 0.01F)) {
+        // 【判断一】：是否为玩家造成的击杀（包括玩家亲手砍死、用三叉戟扎死、射箭射死）
+        boolean isPlayerKill = damageSource.getEntity() instanceof Player;
+        boolean shouldDrop = false;
 
+        // 【判断二】：掉落规则分配
+        if (entity.getType() == net.minecraft.world.entity.EntityType.ELDER_GUARDIAN) {
+            // 远古守卫者作为小 Boss，依然保持 100% 掉落保底（无论怎么死的）
+            shouldDrop = true;
+        } else if (entity.getType() == net.minecraft.world.entity.EntityType.GUARDIAN) {
+            // 普通守卫者：必须是玩家亲手击杀，并且踩中 1.25% (0.0125F) 的概率
+            if (isPlayerKill && serverLevel.getRandom().nextFloat() < 0.0125F) {
+                shouldDrop = true;
+            }
+        }
+
+        // 执行掉落
+        if (shouldDrop) {
             var registry = serverLevel.registryAccess().lookupOrThrow(Registries.ENCHANTMENT);
             // 获取你注册的自定义附魔
             var tridentShot = registry.get(net.minecraft.resources.ResourceKey.create(Registries.ENCHANTMENT, net.minecraft.resources.ResourceLocation.fromNamespaceAndPath("trident_channeling_enhanced", "trident_shot")));
@@ -79,7 +92,6 @@ public abstract class LivingEntityMixin {
             if (tridentShot.isPresent()) {
                 // 完美生成一本带有 1 级“海神之引”的真实附魔书
                 ItemStack book = net.minecraft.world.item.EnchantedBookItem.createForEnchantment(new net.minecraft.world.item.enchantment.EnchantmentInstance(tridentShot.get(), 1));
-                // 【修复红线】：1.21.1 直接传物品即可，不需要传世界参数
                 entity.spawnAtLocation(book);
             }
         }
