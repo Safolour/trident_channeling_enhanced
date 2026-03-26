@@ -14,59 +14,43 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(CrossbowItem.class)
 public class CrossbowItemMixin {
 
+    // 1. 纯净生成：彻底剔除 999999 NBT 暗号
     @Inject(method = "createProjectile", at = @At("HEAD"), cancellable = true)
     private void onCreateProjectile(Level level, LivingEntity shooter, ItemStack weapon, ItemStack ammo, boolean isCrit, CallbackInfoReturnable<Projectile> cir) {
         if (ammo.getItem() instanceof TridentItem) {
             ItemStack actualAmmo = ammo.copyWithCount(1);
-
-            // 识别在装填阶段打上的“幻影叉暗号”
-            Integer repairCost = actualAmmo.get(net.minecraft.core.component.DataComponents.REPAIR_COST);
-            boolean isExtra = (repairCost != null && repairCost == 999999);
-
-            if (isExtra) {
-                // 抹除暗号，做戏做全套
-                actualAmmo.remove(net.minecraft.core.component.DataComponents.REPAIR_COST);
-            }
-
             ThrownTrident trident = new ThrownTrident(level, shooter, actualAmmo);
             CrossbowShotInfo marker = (CrossbowShotInfo) trident;
             marker.mubai_setShotFromCrossbow(true);
 
-            // 告知实体它是冒牌的，并且基础防捡
-            if (isExtra) {
-                marker.mubai_setExtraTrident(true);
-                trident.pickup = AbstractArrow.Pickup.CREATIVE_ONLY;
-            }
-
             var registry = level.registryAccess().lookupOrThrow(net.minecraft.core.registries.Registries.ENCHANTMENT);
+
+            // 力量加成
             var powerEnchantment = registry.get(net.minecraft.world.item.enchantment.Enchantments.POWER);
             if (powerEnchantment.isPresent()) {
                 marker.mubai_setPowerLevel(net.minecraft.world.item.enchantment.EnchantmentHelper.getItemEnchantmentLevel(powerEnchantment.get(), weapon));
             }
 
-            // 【新增：无视红线的反射破盾大法！】
+            // 穿透加成
             var piercing = registry.get(net.minecraft.world.item.enchantment.Enchantments.PIERCING);
             if (piercing.isPresent()) {
                 byte pLevel = (byte) net.minecraft.world.item.enchantment.EnchantmentHelper.getItemEnchantmentLevel(piercing.get(), weapon);
                 if (pLevel > 0) {
                     try {
-                        // 方案 A：强行调用隐藏的破盾方法
                         java.lang.reflect.Method setPierce = AbstractArrow.class.getDeclaredMethod("setPierceLevel", byte.class);
                         setPierce.setAccessible(true);
                         setPierce.invoke(trident, pLevel);
                     } catch (Exception e1) {
                         try {
-                            // 方案 B：如果方法找不到，直接强行修改穿透等级的底层字段
                             java.lang.reflect.Field pierceField = AbstractArrow.class.getDeclaredField("pierceLevel");
                             pierceField.setAccessible(true);
                             pierceField.set(trident, pLevel);
-                        } catch (Exception e2) {
-                            // 兜底方案，覆盖所有 1.21.1 映射环境，绝不报红！
-                        }
+                        } catch (Exception e2) {}
                     }
                 }
             }
@@ -76,6 +60,20 @@ public class CrossbowItemMixin {
             }
 
             cir.setReturnValue(trident);
+        }
+    }
+
+    // 2. 动态多重判定：监听原版的循环发射逻辑
+    // 无论是多重1(分裂2支) 还是多重5(分裂10支)，只要 index > 0，统统按幻影叉处理！
+    @Inject(method = "shootProjectile", at = @At("HEAD"))
+    private void onShootProjectile(LivingEntity shooter, Projectile projectile, int index, float velocity, float divergence, float yaw, LivingEntity target, CallbackInfo ci) {
+        if (projectile instanceof ThrownTrident trident && trident instanceof CrossbowShotInfo marker) {
+            if (marker.mubai_isShotFromCrossbow()) {
+                if (index > 0) {
+                    marker.mubai_setExtraTrident(true); // 标记为幻影叉 (落地即碎)
+                    trident.pickup = AbstractArrow.Pickup.CREATIVE_ONLY; // 防捡起
+                }
+            }
         }
     }
 }

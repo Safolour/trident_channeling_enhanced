@@ -105,46 +105,47 @@ public abstract class TridentEntityMixin extends AbstractArrow implements Crossb
             if (channeling.isPresent()) {
                 int chanLevel = EnchantmentHelper.getItemEnchantmentLevel(channeling.get(), this.getWeaponItem());
 
-                if (chanLevel > 1) {
-                    List<LivingEntity> nearby = serverLevel.getEntitiesOfClass(
-                            LivingEntity.class,
-                            this.getBoundingBox().inflate(4.0),
-                            entity -> !entity.equals(this.getOwner()) && entity.isAlive()
-                    );
+                if (chanLevel > 0) {
 
-                    if (!nearby.isEmpty()) {
-                        LivingEntity firstTarget = nearby.get(0);
-                        LivingEntity attacker = this.getOwner() instanceof LivingEntity le ? le : null;
-
-                        // 【空枪惩罚】：只要没直接扎到怪，落地引发的闪电链一律按原版 8.0 基础伤害计算！
-                        float baseDmg = 8.0f;
-
-                        // 伤害衰减计算 (传导第一次依然进行标准的数学衰减)
-                        float decayedFirstDmg = baseDmg * (chanLevel - 1.0f) / chanLevel;
-
-                        net.minecraft.world.damagesource.DamageSource source = attacker instanceof Player p ?
-                                serverLevel.damageSources().playerAttack(p) :
-                                serverLevel.damageSources().generic();
-
-                        ChainLightningHandler.IS_CHAIN.set(true);
-                        firstTarget.hurt(source, decayedFirstDmg);
-                        ChainLightningHandler.IS_CHAIN.set(false);
-
-                        // 绘制粒子连线
-                        this.mubai_drawTridentToTargetParticles(serverLevel, firstTarget);
-
-                        // 概率落雷
-                        if (!serverLevel.isThundering()) {
-                            double spawnProb = (chanLevel - 1) * 0.02D;
-                            if (serverLevel.getRandom().nextDouble() < spawnProb) {
-                                this.mubai_spawnRealLightningAtTrident(serverLevel);
-                            }
+                    // 【修复！】把落雷概率移到外面：不管砸到人还是砸到花花草草，都先算一次落雷！
+                    if (!serverLevel.isThundering()) {
+                        // 公式：引雷 1级 0%，2级 2%，5级 8%
+                        double spawnProb = (chanLevel - 1) * 0.02D;
+                        if (serverLevel.getRandom().nextDouble() < spawnProb) {
+                            this.mubai_spawnRealLightningAtTrident(serverLevel);
                         }
+                    }
 
-                        // 将后续的弹射次数-1，传入衰减后的基础伤害
-                        int newTotalHits = chanLevel - 1;
-                        if (newTotalHits > 1) {
-                            ChainLightningHandler.startChain(serverLevel, firstTarget, attacker, newTotalHits, decayedFirstDmg);
+                    // 然后再处理“附近有生物时的连锁闪电”
+                    if (chanLevel > 1) {
+                        List<LivingEntity> nearby = serverLevel.getEntitiesOfClass(
+                                LivingEntity.class,
+                                this.getBoundingBox().inflate(4.0),
+                                entity -> !entity.equals(this.getOwner()) && entity.isAlive()
+                        );
+
+                        if (!nearby.isEmpty()) {
+                            LivingEntity firstTarget = nearby.get(0);
+                            LivingEntity attacker = this.getOwner() instanceof LivingEntity le ? le : null;
+
+                            // 【空枪惩罚】
+                            float baseDmg = 8.0f;
+                            float decayedFirstDmg = baseDmg * (chanLevel - 1.0f) / chanLevel;
+
+                            net.minecraft.world.damagesource.DamageSource source = attacker instanceof Player p ?
+                                    serverLevel.damageSources().playerAttack(p) :
+                                    serverLevel.damageSources().generic();
+
+                            ChainLightningHandler.IS_CHAIN.set(true);
+                            firstTarget.hurt(source, decayedFirstDmg);
+                            ChainLightningHandler.IS_CHAIN.set(false);
+
+                            this.mubai_drawTridentToTargetParticles(serverLevel, firstTarget);
+
+                            int newTotalHits = chanLevel - 1;
+                            if (newTotalHits > 1) {
+                                ChainLightningHandler.startChain(serverLevel, firstTarget, attacker, newTotalHits, decayedFirstDmg);
+                            }
                         }
                     }
                 }
@@ -181,6 +182,41 @@ public abstract class TridentEntityMixin extends AbstractArrow implements Crossb
             }
             lightning.setVisualOnly(false);
             serverLevel.addFreshEntity(lightning);
+        }
+    }
+    // 5. 修复 BUG：引雷在打到生物时没有判定！
+    @Inject(method = "onHitEntity", at = @At("TAIL"))
+    private void onHitEntityChanneling(net.minecraft.world.phys.EntityHitResult hitResult, CallbackInfo ci) {
+        if (!this.level().isClientSide() && this.level() instanceof ServerLevel serverLevel) {
+            var registry = serverLevel.registryAccess().lookupOrThrow(Registries.ENCHANTMENT);
+            var channeling = registry.get(Enchantments.CHANNELING);
+
+            if (channeling.isPresent()) {
+                int chanLevel = EnchantmentHelper.getItemEnchantmentLevel(channeling.get(), this.getWeaponItem());
+
+                if (chanLevel > 0) {
+                    // 1. 晴天概率落雷判定！(原版只在雷雨天劈，这里补充非雷雨天的独立概率)
+                    if (!serverLevel.isThundering()) {
+                        double spawnProb = (chanLevel - 1) * 0.02D;
+                        if (serverLevel.getRandom().nextDouble() < spawnProb) {
+                            this.mubai_spawnRealLightningAtTrident(serverLevel);
+                        }
+                    }
+
+                    // 2. 连锁闪电判定：直接扎中怪物也要触发后续弹射！
+                    if (chanLevel > 1 && hitResult.getEntity() instanceof LivingEntity firstTarget) {
+                        LivingEntity attacker = this.getOwner() instanceof LivingEntity le ? le : null;
+
+                        // 因为首目标已经被三叉戟扎伤了，所以从它身上开始向外弹射
+                        int newTotalHits = chanLevel - 1;
+                        if (newTotalHits > 0) {
+                            float baseDmg = 8.0f;
+                            float decayedDmg = baseDmg * (chanLevel - 1.0f) / chanLevel;
+                            ChainLightningHandler.startChain(serverLevel, firstTarget, attacker, newTotalHits, decayedDmg);
+                        }
+                    }
+                }
+            }
         }
     }
 }
