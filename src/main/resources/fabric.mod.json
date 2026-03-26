@@ -1,7 +1,7 @@
 {
 	"schemaVersion": 1,
 	"id": "trident_channeling_enhanced",
-	"version": "${version}",
+	"version": "1.1.0",
 	"name": "Trident Channeling Enhanced",
 	"description": "引雷附魔增强，新增可发射三叉戟的弩",
 	"authors": [
