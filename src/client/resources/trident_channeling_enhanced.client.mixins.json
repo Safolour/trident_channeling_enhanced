@@ -1,0 +1,9 @@
+{
+  "required": true,
+  "package": "trident_channeling_enhanced.mixin.client",
+  "compatibilityLevel": "JAVA_21",
+  "client": [],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

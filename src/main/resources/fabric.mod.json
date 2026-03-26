@@ -1,0 +1,41 @@
+{
+	"schemaVersion": 1,
+	"id": "trident_channeling_enhanced",
+	"version": "${version}",
+	"name": "Trident Channeling Enhanced",
+	"description": "引雷附魔增强，新增可发射三叉戟的弩",
+	"authors": [
+		"沐白awa"
+	],
+	"contact": {
+		"homepage": "https://fabricmc.net/",
+		"sources": "https://github.com/FabricMC/fabric-example-mod"
+	},
+	"license": "CC0-1.0",
+	"icon": "assets/trident_channeling_enhanced/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"trident_channeling_enhanced.trident_channeling_enhanced"
+		],
+		"client": [
+			"trident_channeling_enhanced.trident_channeling_enhanced_Client"
+		],
+		"fabric-datagen": [
+			"trident_channeling_enhanced.trident_channeling_enhanced_DataGenerator"
+		]
+	},
+	"mixins": [
+		"trident_channeling_enhanced.json",
+		{
+			"config": "trident_channeling_enhanced.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.18.4",
+		"minecraft": "~1.21.1",
+		"java": ">=21",
+		"fabric-api": "*"
+	}
+}

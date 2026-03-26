@@ -1,0 +1,14 @@
+{
+  "required": true,
+  "package": "trident_channeling_enhanced.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "LivingEntityMixin",
+    "TridentEntityMixin",
+    "CrossbowItemMixin",
+    "CrossbowItemTridentMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

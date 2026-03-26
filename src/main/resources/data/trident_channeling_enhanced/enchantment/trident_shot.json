@@ -1,0 +1,28 @@
+{
+  "anvil_cost": 8,
+  "description": {
+    "translate": "enchantment.trident_channeling_enhanced.trident_shot",
+    "fallback": "Poseidon's Reach"
+  },
+  "effects": {},
+  "max_cost": {
+    "base": 50,
+    "per_level_above_first": 0
+  },
+  "max_level": 1,
+  "min_cost": {
+    "base": 20,
+    "per_level_above_first": 0
+  },
+  "primary_items": [
+    "minecraft:crossbow"
+  ],
+  "slots": [
+    "mainhand",
+    "offhand"
+  ],
+  "supported_items": [
+    "minecraft:crossbow"
+  ],
+  "weight": 2
+}
