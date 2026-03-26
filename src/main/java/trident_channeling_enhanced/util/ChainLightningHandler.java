@@ -20,7 +20,8 @@ public class ChainLightningHandler {
     private static final ScheduledExecutorService SCHEDULER = Executors.newScheduledThreadPool(1);
     public static final ThreadLocal<Boolean> IS_CHAIN = ThreadLocal.withInitial(() -> false);
 
-    public static void startChain(ServerLevel level, LivingEntity firstTarget, LivingEntity attacker, int totalHits, float baseDamage) {
+    // 【核心新增参数】：chainRadius
+    public static void startChain(ServerLevel level, LivingEntity firstTarget, LivingEntity attacker, int totalHits, float baseDamage, float chainRadius) {
         if (totalHits <= 1) return;
 
         Set<Entity> hitEntities = new HashSet<>();
@@ -29,10 +30,10 @@ public class ChainLightningHandler {
             hitEntities.add(attacker);
         }
 
-        scheduleNextJump(level, firstTarget, attacker, totalHits, 2, baseDamage, hitEntities);
+        scheduleNextJump(level, firstTarget, attacker, totalHits, 2, baseDamage, hitEntities, chainRadius);
     }
 
-    private static void scheduleNextJump(ServerLevel level, LivingEntity currentSource, LivingEntity attacker, int totalHits, int currentCount, float baseDamage, Set<Entity> hitEntities) {
+    private static void scheduleNextJump(ServerLevel level, LivingEntity currentSource, LivingEntity attacker, int totalHits, int currentCount, float baseDamage, Set<Entity> hitEntities, float chainRadius) {
         if (currentCount > totalHits) return;
 
         MinecraftServer server = level.getServer();
@@ -40,7 +41,8 @@ public class ChainLightningHandler {
 
         SCHEDULER.schedule(() -> {
             server.execute(() -> {
-                AABB box = currentSource.getBoundingBox().inflate(3.0);
+                // 【应用新的动态寻找半径】
+                AABB box = currentSource.getBoundingBox().inflate(chainRadius);
                 List<Entity> candidates = level.getEntities(currentSource, box, e ->
                         e instanceof LivingEntity
                                 && e != attacker
@@ -49,9 +51,7 @@ public class ChainLightningHandler {
                 );
 
                 if (!candidates.isEmpty()) {
-                    // 【核心修复】：按离当前目标的距离，从小到大排序！
                     candidates.sort(java.util.Comparator.comparingDouble(e -> e.distanceToSqr(currentSource)));
-
                     LivingEntity nextTarget = (LivingEntity) candidates.get(0);
 
                     float damageMultiplier = 1.0f - ((float)(currentCount - 1) / totalHits);
@@ -71,7 +71,7 @@ public class ChainLightningHandler {
                     spawnLineParticles(level, currentSource, nextTarget);
                     hitEntities.add(nextTarget);
 
-                    scheduleNextJump(level, nextTarget, attacker, totalHits, currentCount + 1, baseDamage, hitEntities);
+                    scheduleNextJump(level, nextTarget, attacker, totalHits, currentCount + 1, baseDamage, hitEntities, chainRadius);
                 }
             });
         }, 100, TimeUnit.MILLISECONDS);

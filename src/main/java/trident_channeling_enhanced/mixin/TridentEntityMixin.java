@@ -3,6 +3,8 @@ package trident_channeling_enhanced.mixin;
 import trident_channeling_enhanced.util.ChainLightningHandler;
 import trident_channeling_enhanced.util.CrossbowShotInfo;
 import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LightningBolt;
@@ -68,8 +70,12 @@ public abstract class TridentEntityMixin extends AbstractArrow implements Crossb
     @Inject(method = "playerTouch", at = @At("HEAD"), cancellable = true)
     private void onPlayerTouch(Player player, CallbackInfo ci) {
         if (this.shotFromCrossbow && this.isExtraTrident) {
-            this.discard();
-            ci.cancel();
+            // 【核心修复：出膛保护】
+            // 如果它才刚生成不到 10 tick (0.5秒)，说明它刚从玩家手里射出来，不能碰碎！
+            if (this.tickCount > 10) {
+                this.discard();
+                ci.cancel();
+            }
         }
     }
 
@@ -108,16 +114,19 @@ public abstract class TridentEntityMixin extends AbstractArrow implements Crossb
                     }
 
                     if (chanLevel > 1) {
+                        // 【核心获取：连锁增幅等级计算半径】
+                        var reachEnchantment = registry.get(ResourceKey.create(Registries.ENCHANTMENT, ResourceLocation.fromNamespaceAndPath("trident_channeling_enhanced", "chain_reach")));
+                        int reachLevel = reachEnchantment.isPresent() ? EnchantmentHelper.getItemEnchantmentLevel(reachEnchantment.get(), this.getWeaponItem()) : 0;
+                        float chainRadius = 1.75f + (reachLevel * 0.25f);
+
                         List<LivingEntity> nearby = serverLevel.getEntitiesOfClass(
                                 LivingEntity.class,
-                                this.getBoundingBox().inflate(4.0),
+                                this.getBoundingBox().inflate(chainRadius),
                                 entity -> !entity.equals(this.getOwner()) && entity.isAlive()
                         );
 
                         if (!nearby.isEmpty()) {
-                            // 【核心修复】：按离三叉戟的距离，从小到大排序！
                             nearby.sort(java.util.Comparator.comparingDouble(e -> e.distanceToSqr(this)));
-
                             LivingEntity firstTarget = nearby.get(0);
                             LivingEntity attacker = this.getOwner() instanceof LivingEntity le ? le : null;
 
@@ -136,7 +145,7 @@ public abstract class TridentEntityMixin extends AbstractArrow implements Crossb
 
                             int newTotalHits = chanLevel - 1;
                             if (newTotalHits > 1) {
-                                ChainLightningHandler.startChain(serverLevel, firstTarget, attacker, newTotalHits, decayedFirstDmg);
+                                ChainLightningHandler.startChain(serverLevel, firstTarget, attacker, newTotalHits, decayedFirstDmg, chainRadius);
                             }
                         }
                     }
@@ -167,9 +176,13 @@ public abstract class TridentEntityMixin extends AbstractArrow implements Crossb
 
                         int newTotalHits = chanLevel - 1;
                         if (newTotalHits > 0) {
+                            var reachEnchantment = registry.get(ResourceKey.create(Registries.ENCHANTMENT, ResourceLocation.fromNamespaceAndPath("trident_channeling_enhanced", "chain_reach")));
+                            int reachLevel = reachEnchantment.isPresent() ? EnchantmentHelper.getItemEnchantmentLevel(reachEnchantment.get(), this.getWeaponItem()) : 0;
+                            float chainRadius = 1.75f + (reachLevel * 0.25f);
+
                             float baseDmg = 8.0f;
                             float decayedDmg = baseDmg * (chanLevel - 1.0f) / chanLevel;
-                            ChainLightningHandler.startChain(serverLevel, firstTarget, attacker, newTotalHits, decayedDmg);
+                            ChainLightningHandler.startChain(serverLevel, firstTarget, attacker, newTotalHits, decayedDmg, chainRadius);
                         }
                     }
                 }
