@@ -16,7 +16,9 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.enchantment.EnchantmentHelper;
 import net.minecraft.world.item.enchantment.Enchantments;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.Vec3;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -38,6 +40,9 @@ public abstract class TridentEntityMixin extends AbstractArrow implements Crossb
     @Unique private int powerLevel = 0;
     @Unique private boolean isExtraTrident = false;
 
+    // 【充能核心】：控制三叉戟自身是否带有高压电
+    @Unique private boolean mubai_canChain = true;
+
     protected TridentEntityMixin(EntityType<? extends AbstractArrow> entityType, Level level) {
         super(entityType, level);
     }
@@ -54,28 +59,18 @@ public abstract class TridentEntityMixin extends AbstractArrow implements Crossb
         if (this.shotFromCrossbow) {
             double speed = this.getDeltaMovement().length();
             double baseTridentDamage = 3.0;
-
-            if (this.powerLevel > 0) {
-                baseTridentDamage += (this.powerLevel * 0.5) + 0.5;
-            }
-
+            if (this.powerLevel > 0) baseTridentDamage += (this.powerLevel * 0.5) + 0.5;
             float calculatedDamage = (float) (speed * baseTridentDamage);
-            calculatedDamage += (calculatedDamage / 4.0f) + 1.0f;
-
-            return calculatedDamage;
+            return calculatedDamage + (calculatedDamage / 4.0f) + 1.0f;
         }
         return originalDamage;
     }
 
     @Inject(method = "playerTouch", at = @At("HEAD"), cancellable = true)
     private void onPlayerTouch(Player player, CallbackInfo ci) {
-        if (this.shotFromCrossbow && this.isExtraTrident) {
-            // 【核心修复：出膛保护】
-            // 如果它才刚生成不到 10 tick (0.5秒)，说明它刚从玩家手里射出来，不能碰碎！
-            if (this.tickCount > 10) {
-                this.discard();
-                ci.cancel();
-            }
+        if (this.shotFromCrossbow && this.isExtraTrident && this.tickCount > 10) {
+            this.discard();
+            ci.cancel();
         }
     }
 
@@ -85,7 +80,6 @@ public abstract class TridentEntityMixin extends AbstractArrow implements Crossb
         if (!level.isClientSide() && this.getY() < level.getMinBuildHeight() - 10.0) {
             var registry = level.registryAccess().lookupOrThrow(Registries.ENCHANTMENT);
             var loyalty = registry.get(Enchantments.LOYALTY);
-
             if (loyalty.isPresent() && EnchantmentHelper.getItemEnchantmentLevel(loyalty.get(), this.getWeaponItem()) > 0) {
                 this.dealtDamage = true;
             } else if (this.getY() < level.getMinBuildHeight() - 64.0) {
@@ -94,6 +88,9 @@ public abstract class TridentEntityMixin extends AbstractArrow implements Crossb
         }
     }
 
+    // ==========================================
+    // 击中方块 (发光修复 + 100% 狂暴电塔)
+    // ==========================================
     @Override
     protected void onHitBlock(BlockHitResult hitResult) {
         super.onHitBlock(hitResult);
@@ -104,17 +101,30 @@ public abstract class TridentEntityMixin extends AbstractArrow implements Crossb
 
             if (channeling.isPresent()) {
                 int chanLevel = EnchantmentHelper.getItemEnchantmentLevel(channeling.get(), this.getWeaponItem());
-
                 if (chanLevel > 0) {
-                    if (!serverLevel.isThundering()) {
-                        double spawnProb = (chanLevel - 1) * 0.02D;
+
+                    boolean spawnedLightning = false;
+                    boolean chained = false;
+
+                    // 1. 避雷针抽奖机：永远在线！不管三叉戟有没有电，只要抖了就有可能出雷！
+                    boolean isLightningRod = serverLevel.getBlockState(hitResult.getBlockPos()).is(Blocks.LIGHTNING_ROD);
+                    boolean canSeeSky = serverLevel.canSeeSky(hitResult.getBlockPos().above());
+
+                    if (isLightningRod && canSeeSky) {
+                        // 雷雨天 100% 狂暴，非雷雨天按概率
+                        double spawnProb = serverLevel.isThundering() ? 1.0 : (chanLevel - 1) * 0.02D;
                         if (serverLevel.getRandom().nextDouble() < spawnProb) {
-                            this.mubai_spawnRealLightningAtTrident(serverLevel);
+                            // 【核心修复】：加上 .above()，把闪电生成在避雷针的头顶，完美触发白色通电发光！
+                            this.mubai_spawnRealLightningAt(serverLevel, Vec3.atBottomCenterOf(hitResult.getBlockPos().above()));
+                            spawnedLightning = true;
                         }
                     }
 
+                    // 2. 如果之前电放光了，方块撞击的判定到此结束，不再喷射连锁火花
+                    if (!this.mubai_canChain) return;
+
+                    // 3. 有电状态下的初次连锁闪电爆发
                     if (chanLevel > 1) {
-                        // 【核心获取：连锁增幅等级计算半径】
                         var reachEnchantment = registry.get(ResourceKey.create(Registries.ENCHANTMENT, ResourceLocation.fromNamespaceAndPath("trident_channeling_enhanced", "chain_reach")));
                         int reachLevel = reachEnchantment.isPresent() ? EnchantmentHelper.getItemEnchantmentLevel(reachEnchantment.get(), this.getWeaponItem()) : 0;
                         float chainRadius = 1.75f + (reachLevel * 0.25f);
@@ -132,59 +142,136 @@ public abstract class TridentEntityMixin extends AbstractArrow implements Crossb
 
                             float baseDmg = 8.0f;
                             float decayedFirstDmg = baseDmg * (chanLevel - 1.0f) / chanLevel;
-
                             net.minecraft.world.damagesource.DamageSource source = attacker instanceof Player p ?
-                                    serverLevel.damageSources().playerAttack(p) :
-                                    serverLevel.damageSources().generic();
+                                    serverLevel.damageSources().playerAttack(p) : serverLevel.damageSources().generic();
 
                             ChainLightningHandler.IS_CHAIN.set(true);
                             firstTarget.hurt(source, decayedFirstDmg);
                             ChainLightningHandler.IS_CHAIN.set(false);
-
                             this.mubai_drawTridentToTargetParticles(serverLevel, firstTarget);
 
                             int newTotalHits = chanLevel - 1;
                             if (newTotalHits > 1) {
                                 ChainLightningHandler.startChain(serverLevel, firstTarget, attacker, newTotalHits, decayedFirstDmg, chainRadius);
                             }
+                            chained = true;
                         }
+                    }
+
+                    // 4. 【拉闸断电】：爆发完之后，进入防御塔的“熄火”等待期
+                    if (spawnedLightning || chained) {
+                        this.mubai_canChain = false;
+                        this.setBaseDamage(8.0);
+                        this.shotFromCrossbow = false;
                     }
                 }
             }
         }
     }
 
+    // ==========================================
+    // 击中生物
+    // ==========================================
     @Inject(method = "onHitEntity", at = @At("TAIL"))
-    private void onHitEntityChanneling(net.minecraft.world.phys.EntityHitResult hitResult, CallbackInfo ci) {
+    private void onHitEntityChanneling(EntityHitResult hitResult, CallbackInfo ci) {
         if (!this.level().isClientSide() && this.level() instanceof ServerLevel serverLevel) {
+            // 没电了直接装死
+            if (!this.mubai_canChain) return;
+
             var registry = serverLevel.registryAccess().lookupOrThrow(Registries.ENCHANTMENT);
             var channeling = registry.get(Enchantments.CHANNELING);
 
             if (channeling.isPresent()) {
                 int chanLevel = EnchantmentHelper.getItemEnchantmentLevel(channeling.get(), this.getWeaponItem());
 
-                if (chanLevel > 0) {
-                    if (!serverLevel.isThundering()) {
+                if (chanLevel > 0 && hitResult.getEntity() instanceof LivingEntity firstTarget) {
+
+                    boolean spawnedLightning = false;
+                    boolean chained = false;
+                    boolean canSeeSky = serverLevel.canSeeSky(firstTarget.blockPosition());
+
+                    if (canSeeSky && !serverLevel.isThundering()) {
                         double spawnProb = (chanLevel - 1) * 0.02D;
                         if (serverLevel.getRandom().nextDouble() < spawnProb) {
-                            this.mubai_spawnRealLightningAtTrident(serverLevel);
+                            this.mubai_spawnRealLightningAt(serverLevel, firstTarget.position());
+                            spawnedLightning = true;
                         }
                     }
 
-                    if (chanLevel > 1 && hitResult.getEntity() instanceof LivingEntity firstTarget) {
+                    int newTotalHits = chanLevel - 1;
+                    if (newTotalHits > 0) {
                         LivingEntity attacker = this.getOwner() instanceof LivingEntity le ? le : null;
+                        var reachEnchantment = registry.get(ResourceKey.create(Registries.ENCHANTMENT, ResourceLocation.fromNamespaceAndPath("trident_channeling_enhanced", "chain_reach")));
+                        int reachLevel = reachEnchantment.isPresent() ? EnchantmentHelper.getItemEnchantmentLevel(reachEnchantment.get(), this.getWeaponItem()) : 0;
+                        float chainRadius = 1.75f + (reachLevel * 0.25f);
 
-                        int newTotalHits = chanLevel - 1;
-                        if (newTotalHits > 0) {
-                            var reachEnchantment = registry.get(ResourceKey.create(Registries.ENCHANTMENT, ResourceLocation.fromNamespaceAndPath("trident_channeling_enhanced", "chain_reach")));
-                            int reachLevel = reachEnchantment.isPresent() ? EnchantmentHelper.getItemEnchantmentLevel(reachEnchantment.get(), this.getWeaponItem()) : 0;
-                            float chainRadius = 1.75f + (reachLevel * 0.25f);
-
-                            float baseDmg = 8.0f;
-                            float decayedDmg = baseDmg * (chanLevel - 1.0f) / chanLevel;
-                            ChainLightningHandler.startChain(serverLevel, firstTarget, attacker, newTotalHits, decayedDmg, chainRadius);
-                        }
+                        float baseDmg = 8.0f;
+                        float decayedDmg = baseDmg * (chanLevel - 1.0f) / chanLevel;
+                        ChainLightningHandler.startChain(serverLevel, firstTarget, attacker, newTotalHits, decayedDmg, chainRadius);
+                        chained = true;
                     }
+
+                    if (spawnedLightning || chained) {
+                        this.mubai_canChain = false;
+                        this.setBaseDamage(8.0);
+                        this.shotFromCrossbow = false;
+                    }
+                }
+            }
+        }
+    }
+
+    // ==========================================
+    // 【复活充能机制】：天雷洗礼，满血复活
+    // ==========================================
+    @Override
+    public void thunderHit(ServerLevel serverLevel, LightningBolt lightning) {
+        super.thunderHit(serverLevel, lightning);
+
+        // 【充电】：瞬间充满电，重新激活连锁！
+        this.mubai_canChain = true;
+
+        var registry = serverLevel.registryAccess().lookupOrThrow(Registries.ENCHANTMENT);
+        var channeling = registry.get(Enchantments.CHANNELING);
+
+        if (channeling.isPresent()) {
+            int chanLevel = EnchantmentHelper.getItemEnchantmentLevel(channeling.get(), this.getWeaponItem());
+            if (chanLevel > 1) {
+                var reachEnchantment = registry.get(ResourceKey.create(Registries.ENCHANTMENT, ResourceLocation.fromNamespaceAndPath("trident_channeling_enhanced", "chain_reach")));
+                int reachLevel = reachEnchantment.isPresent() ? EnchantmentHelper.getItemEnchantmentLevel(reachEnchantment.get(), this.getWeaponItem()) : 0;
+                float chainRadius = 1.75f + (reachLevel * 0.25f);
+
+                List<LivingEntity> nearby = serverLevel.getEntitiesOfClass(
+                        LivingEntity.class,
+                        this.getBoundingBox().inflate(chainRadius),
+                        entity -> !entity.equals(this.getOwner()) && entity.isAlive()
+                );
+
+                if (!nearby.isEmpty()) {
+                    // 如果扫描到怪，借着雷霆之威瞬间爆射一圈连锁
+                    nearby.sort(java.util.Comparator.comparingDouble(e -> e.distanceToSqr(this)));
+                    LivingEntity firstTarget = nearby.get(0);
+                    LivingEntity attacker = this.getOwner() instanceof LivingEntity le ? le : null;
+
+                    float baseDmg = 8.0f;
+                    float decayedFirstDmg = baseDmg * (chanLevel - 1.0f) / chanLevel;
+                    net.minecraft.world.damagesource.DamageSource source = attacker instanceof Player p ?
+                            serverLevel.damageSources().playerAttack(p) : serverLevel.damageSources().generic();
+
+                    ChainLightningHandler.IS_CHAIN.set(true);
+                    firstTarget.hurt(source, decayedFirstDmg);
+                    ChainLightningHandler.IS_CHAIN.set(false);
+                    this.mubai_drawTridentToTargetParticles(serverLevel, firstTarget);
+
+                    int newTotalHits = chanLevel - 1;
+                    if (newTotalHits > 1) {
+                        ChainLightningHandler.startChain(serverLevel, firstTarget, attacker, newTotalHits, decayedFirstDmg, chainRadius);
+                    }
+
+                    // 【再次熄火】：打完子弹，继续等待下一道落雷的洗礼
+                    this.mubai_canChain = false;
+                    this.setBaseDamage(8.0);
+                    this.shotFromCrossbow = false;
                 }
             }
         }
@@ -206,10 +293,10 @@ public abstract class TridentEntityMixin extends AbstractArrow implements Crossb
     }
 
     @Unique
-    private void mubai_spawnRealLightningAtTrident(ServerLevel serverLevel) {
+    private void mubai_spawnRealLightningAt(ServerLevel serverLevel, Vec3 pos) {
         LightningBolt lightning = EntityType.LIGHTNING_BOLT.create(serverLevel);
         if (lightning != null) {
-            lightning.moveTo(this.getX(), this.getY(), this.getZ());
+            lightning.moveTo(pos.x, pos.y, pos.z);
             if (this.getOwner() instanceof net.minecraft.server.level.ServerPlayer player) {
                 lightning.setCause(player);
             }

@@ -1,7 +1,7 @@
 {
 	"schemaVersion": 1,
 	"id": "trident_channeling_enhanced",
-	"version": "1.1.0",
+	"version": "1.1.1",
 	"name": "Trident Channeling Enhanced",
 	"description": "引雷附魔增强：支持弩发射三叉戟，新增连锁闪电追踪与范围增强机制。",
 	"authors": [
