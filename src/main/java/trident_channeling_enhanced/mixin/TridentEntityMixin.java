@@ -47,7 +47,6 @@ public abstract class TridentEntityMixin extends AbstractArrow implements Crossb
     @Override public void mubai_setExtraTrident(boolean extra) { this.isExtraTrident = extra; }
     @Override public boolean mubai_isExtraTrident() { return this.isExtraTrident; }
 
-    // 1. 弩射三叉戟的伤害公式（直击怪物依然享受高额速度和力量加成）
     @ModifyVariable(method = "onHitEntity", at = @At(value = "STORE", ordinal = 0), ordinal = 0)
     private float modifyBaseDamage(float originalDamage) {
         if (this.shotFromCrossbow) {
@@ -66,7 +65,6 @@ public abstract class TridentEntityMixin extends AbstractArrow implements Crossb
         return originalDamage;
     }
 
-    // 2. 幻影叉接触即粉碎
     @Inject(method = "playerTouch", at = @At("HEAD"), cancellable = true)
     private void onPlayerTouch(Player player, CallbackInfo ci) {
         if (this.shotFromCrossbow && this.isExtraTrident) {
@@ -75,7 +73,6 @@ public abstract class TridentEntityMixin extends AbstractArrow implements Crossb
         }
     }
 
-    // 3. 虚空忠诚返回 (移除了多余的速度监控，回归最简)
     @Inject(method = "tick", at = @At("HEAD"))
     private void onTick(CallbackInfo ci) {
         Level level = this.level();
@@ -91,9 +88,6 @@ public abstract class TridentEntityMixin extends AbstractArrow implements Crossb
         }
     }
 
-    // ==========================================
-    // 4. 【核心判定！】纯 Java 拦截插在地上的状态
-    // ==========================================
     @Override
     protected void onHitBlock(BlockHitResult hitResult) {
         super.onHitBlock(hitResult);
@@ -106,17 +100,13 @@ public abstract class TridentEntityMixin extends AbstractArrow implements Crossb
                 int chanLevel = EnchantmentHelper.getItemEnchantmentLevel(channeling.get(), this.getWeaponItem());
 
                 if (chanLevel > 0) {
-
-                    // 【修复！】把落雷概率移到外面：不管砸到人还是砸到花花草草，都先算一次落雷！
                     if (!serverLevel.isThundering()) {
-                        // 公式：引雷 1级 0%，2级 2%，5级 8%
                         double spawnProb = (chanLevel - 1) * 0.02D;
                         if (serverLevel.getRandom().nextDouble() < spawnProb) {
                             this.mubai_spawnRealLightningAtTrident(serverLevel);
                         }
                     }
 
-                    // 然后再处理“附近有生物时的连锁闪电”
                     if (chanLevel > 1) {
                         List<LivingEntity> nearby = serverLevel.getEntitiesOfClass(
                                 LivingEntity.class,
@@ -125,10 +115,12 @@ public abstract class TridentEntityMixin extends AbstractArrow implements Crossb
                         );
 
                         if (!nearby.isEmpty()) {
+                            // 【核心修复】：按离三叉戟的距离，从小到大排序！
+                            nearby.sort(java.util.Comparator.comparingDouble(e -> e.distanceToSqr(this)));
+
                             LivingEntity firstTarget = nearby.get(0);
                             LivingEntity attacker = this.getOwner() instanceof LivingEntity le ? le : null;
 
-                            // 【空枪惩罚】
                             float baseDmg = 8.0f;
                             float decayedFirstDmg = baseDmg * (chanLevel - 1.0f) / chanLevel;
 
@@ -153,9 +145,37 @@ public abstract class TridentEntityMixin extends AbstractArrow implements Crossb
         }
     }
 
-    // ==========================================
-    // 【私有辅助方法】
-    // ==========================================
+    @Inject(method = "onHitEntity", at = @At("TAIL"))
+    private void onHitEntityChanneling(net.minecraft.world.phys.EntityHitResult hitResult, CallbackInfo ci) {
+        if (!this.level().isClientSide() && this.level() instanceof ServerLevel serverLevel) {
+            var registry = serverLevel.registryAccess().lookupOrThrow(Registries.ENCHANTMENT);
+            var channeling = registry.get(Enchantments.CHANNELING);
+
+            if (channeling.isPresent()) {
+                int chanLevel = EnchantmentHelper.getItemEnchantmentLevel(channeling.get(), this.getWeaponItem());
+
+                if (chanLevel > 0) {
+                    if (!serverLevel.isThundering()) {
+                        double spawnProb = (chanLevel - 1) * 0.02D;
+                        if (serverLevel.getRandom().nextDouble() < spawnProb) {
+                            this.mubai_spawnRealLightningAtTrident(serverLevel);
+                        }
+                    }
+
+                    if (chanLevel > 1 && hitResult.getEntity() instanceof LivingEntity firstTarget) {
+                        LivingEntity attacker = this.getOwner() instanceof LivingEntity le ? le : null;
+
+                        int newTotalHits = chanLevel - 1;
+                        if (newTotalHits > 0) {
+                            float baseDmg = 8.0f;
+                            float decayedDmg = baseDmg * (chanLevel - 1.0f) / chanLevel;
+                            ChainLightningHandler.startChain(serverLevel, firstTarget, attacker, newTotalHits, decayedDmg);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     @Unique
     private void mubai_drawTridentToTargetParticles(ServerLevel serverLevel, LivingEntity target) {
@@ -182,41 +202,6 @@ public abstract class TridentEntityMixin extends AbstractArrow implements Crossb
             }
             lightning.setVisualOnly(false);
             serverLevel.addFreshEntity(lightning);
-        }
-    }
-    // 5. 修复 BUG：引雷在打到生物时没有判定！
-    @Inject(method = "onHitEntity", at = @At("TAIL"))
-    private void onHitEntityChanneling(net.minecraft.world.phys.EntityHitResult hitResult, CallbackInfo ci) {
-        if (!this.level().isClientSide() && this.level() instanceof ServerLevel serverLevel) {
-            var registry = serverLevel.registryAccess().lookupOrThrow(Registries.ENCHANTMENT);
-            var channeling = registry.get(Enchantments.CHANNELING);
-
-            if (channeling.isPresent()) {
-                int chanLevel = EnchantmentHelper.getItemEnchantmentLevel(channeling.get(), this.getWeaponItem());
-
-                if (chanLevel > 0) {
-                    // 1. 晴天概率落雷判定！(原版只在雷雨天劈，这里补充非雷雨天的独立概率)
-                    if (!serverLevel.isThundering()) {
-                        double spawnProb = (chanLevel - 1) * 0.02D;
-                        if (serverLevel.getRandom().nextDouble() < spawnProb) {
-                            this.mubai_spawnRealLightningAtTrident(serverLevel);
-                        }
-                    }
-
-                    // 2. 连锁闪电判定：直接扎中怪物也要触发后续弹射！
-                    if (chanLevel > 1 && hitResult.getEntity() instanceof LivingEntity firstTarget) {
-                        LivingEntity attacker = this.getOwner() instanceof LivingEntity le ? le : null;
-
-                        // 因为首目标已经被三叉戟扎伤了，所以从它身上开始向外弹射
-                        int newTotalHits = chanLevel - 1;
-                        if (newTotalHits > 0) {
-                            float baseDmg = 8.0f;
-                            float decayedDmg = baseDmg * (chanLevel - 1.0f) / chanLevel;
-                            ChainLightningHandler.startChain(serverLevel, firstTarget, attacker, newTotalHits, decayedDmg);
-                        }
-                    }
-                }
-            }
         }
     }
 }

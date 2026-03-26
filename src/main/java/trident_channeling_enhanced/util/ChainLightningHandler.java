@@ -20,7 +20,6 @@ public class ChainLightningHandler {
     private static final ScheduledExecutorService SCHEDULER = Executors.newScheduledThreadPool(1);
     public static final ThreadLocal<Boolean> IS_CHAIN = ThreadLocal.withInitial(() -> false);
 
-    // 参数改为了 totalHits (总次数，等于生效的引雷等级)
     public static void startChain(ServerLevel level, LivingEntity firstTarget, LivingEntity attacker, int totalHits, float baseDamage) {
         if (totalHits <= 1) return;
 
@@ -30,12 +29,10 @@ public class ChainLightningHandler {
             hitEntities.add(attacker);
         }
 
-        // 【关键修复 1】初始近战/投掷命中算作第 1 次，所以弹射出去的这下，直接从第 2 次开始算！
         scheduleNextJump(level, firstTarget, attacker, totalHits, 2, baseDamage, hitEntities);
     }
 
     private static void scheduleNextJump(ServerLevel level, LivingEntity currentSource, LivingEntity attacker, int totalHits, int currentCount, float baseDamage, Set<Entity> hitEntities) {
-        // 如果当前次数超过了总次数，停止弹射
         if (currentCount > totalHits) return;
 
         MinecraftServer server = level.getServer();
@@ -52,13 +49,11 @@ public class ChainLightningHandler {
                 );
 
                 if (!candidates.isEmpty()) {
+                    // 【核心修复】：按离当前目标的距离，从小到大排序！
+                    candidates.sort(java.util.Comparator.comparingDouble(e -> e.distanceToSqr(currentSource)));
+
                     LivingEntity nextTarget = (LivingEntity) candidates.get(0);
 
-                    // 【关键修复 2】严格按照你的公式：1 - (当前次数 - 1) / 总次数
-                    // 如果 5 级手打(按4级算)，总次数为 4。
-                    // 第一次弹射(currentCount=2)：1 - (2-1)/4 = 75%
-                    // 第二次弹射(currentCount=3)：1 - (3-1)/4 = 50%
-                    // 第三次弹射(currentCount=4)：1 - (4-1)/4 = 25%
                     float damageMultiplier = 1.0f - ((float)(currentCount - 1) / totalHits);
                     float finalDamage = baseDamage * damageMultiplier;
 
